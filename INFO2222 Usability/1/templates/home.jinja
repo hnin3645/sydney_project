@@ -1,0 +1,564 @@
+<!-- 
+    Here you'll find the main exhibit: the chat application code. Feel free to look around!
+-->
+{% extends 'base.jinja' %}
+
+{% block content %}
+<style>
+    /* Main body and column layout */
+    main {
+        display: flex;
+        justify-content: space-between;
+        padding: 20px;
+    }
+
+    #left_panel {
+        flex: 3;
+        padding-right: 20px;
+    }
+
+    #right_panel {
+        flex: 2;
+        padding-left: 20px;
+        border-left: 1px solid #ccc;
+        max-width: 400px;
+    }
+
+    /* Message box style */
+    #message_box {
+        border: 1px solid black;
+        height: 400px;
+        width: 100%;
+        overflow: auto;
+        padding: 2px;
+    }
+
+    /* Add some text and border beautification */
+    #right_panel h2, #right_panel h3 {
+        color: #333;
+        border-bottom: 2px solid #007BFF;
+        padding-bottom: 5px;
+        margin-bottom: 10px;
+    }
+
+    /* List style */
+    #right_panel ul {
+        list-style-type: none;
+        padding: 0;
+    }
+
+    #right_panel li {
+        padding: 8px;
+        border: 1px solid #ddd;
+        margin-top: 5px;
+        background-color: #f9f9f9;
+        cursor: pointer;
+    }
+
+    #right_panel li:hover {
+        background-color: #f1f1f1;
+    }
+
+    /* Input box and button styles */
+    input[type="text"], button {
+        padding: 8px;
+        margin-top: 5px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    button {
+        background-color: #007BFF;
+        color: white;
+        border: none;
+        cursor: pointer;
+    }
+
+    button:hover {
+        background-color: #0056b3;
+    }
+</style>
+
+
+<!-- Updated Navbar -->
+<nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="#">{{ username }}</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNavAltMarkup" aria-controls="navbarNavAltMarkup" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavAltMarkup">
+            <div class="navbar-nav">
+                <a class="nav-item nav-link" href="{{ url_for('logout') }}">Log Out</a>
+                <a class="nav-item nav-link" href="{{ url_for('ed_page') }}">ED</a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main>
+    <div id="left_panel">
+        <h1>Messaging App</h1>
+        <section id="message_box"></section>
+        <section id="chat_box">
+            <p class="text">Chat with:</p>
+            <input id="receiver" placeholder="username">
+            <button onclick="join_room()">Chat</button>
+        </section>
+        <section id="input_box" style="display: none">
+            <p class="text">Message:</p>
+            <input id="message" placeholder="message">
+            <button onclick="send()">Send</button>
+            <button onclick="leave()">Leave Room</button>
+        </section>
+    </div>
+
+    <div id="right_panel">
+        <section id="friends_list">
+            <h2>Friends List</h2>
+            <ul id="friends"></ul>
+        </section>
+
+        <section id="add_friend">
+            <h3>Add a Friend</h3>
+            <input id="new_friend_username" placeholder="Enter friend's username">
+            <button onclick="addFriend()">Add Friend</button>
+        </section>
+
+        <section id="friend_requests">
+            <h3>Received Friend Requests</h3>
+            <ul id="received_requests"></ul>
+
+            <h3>Sent Friend Requests</h3>
+            <ul id="sent_requests"></ul>
+        </section>
+    </div>
+</main>
+
+
+
+<script src="/static/js/libs/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js"></script>
+<script>
+    {#let room_id = 23124;#}
+
+    // when the user presses the "Enter" key inside of the "message box", 
+    // the message is sent to the server
+    $("#message").on("keyup", (e) => {
+        if (e.key == "Enter") {
+            send();
+        }
+    })
+
+    // when the user presses the enter key inside of the "receiver box"
+    // the user joins a (socket) room
+     $("#receiver").on("keyup", (e) => {
+        if (e.key == "Enter") {
+            join_room();
+        }
+    })
+
+
+    $(document).ready(() => {
+        fetchFriends();
+        fetchFriendRequests();
+
+        let roomId = Cookies.get(username + "_room_id");
+        let receiver = Cookies.get(username + "_receiver");
+
+        // Early return if no room ID is found, otherwise check the status of the receiver
+        if (roomId === undefined) {
+            console.log("No active room found.");
+            return; // Exiting if there is no active chat room
+        } else if (receiver) {
+            // Check the status of the receiver only if there is an active room and a receiver is defined
+            axios.get('/friend_requests')
+                .then(response => {
+                    const friendRequests = response.data;
+                    // Finds the request status of the current recipient
+                    const activeRequest = friendRequests.find(request =>
+                        (request.sender_username === receiver || request.receiver_username === receiver) &&
+                        (request.status === 'blocked' || request.status === 'rejected')
+                    );
+
+                    if (activeRequest && roomId) {
+                        console.log(`Exiting chat room because the receiver ${receiver} is ${activeRequest.status}.`);
+                        leave(roomId);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching friend requests:', error);
+                });
+        }
+        // the user has already joined an existing room
+        // we'll display the message box, instead of the "Chat with: " box
+        $("#chat_box").hide();
+        $("#input_box").show();
+        room_id = parseInt(Cookies.get(username + "_room_id"));
+    })
+
+
+    let username = "{{ username }}";
+
+    Cookies.set('username', username);
+    const secret = "c2FkU0Fk";
+
+    // initializes the socket
+    const socket = io();
+
+    socket.on("user_message", data => {
+        let username = data.username;
+        let encryptedMessageSender = data.encryptedMessageSender;
+        let encryptedMessageReceiver = data.encryptedMessageReceiver;
+
+        // Determine which encrypted message to use, and if the message sender is the current user, use the sender's encrypted message
+        let encryptedMessage = username === Cookies.get('username') ? encryptedMessageSender : encryptedMessageReceiver;
+
+        axios.get('/get_private_key/' + Cookies.get('username'))
+            .then(response => {
+                if (response.data.private_key) {
+                    let privateKey = response.data.private_key;
+                    const decryptedMessage = decryptMessage(encryptedMessage, privateKey);
+                    add_message(username + ": " + decryptedMessage, "black");
+                } else {
+                    console.error('No private key available for the user.');
+                    add_message(username + ": [Encrypted Message]", "black");
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching private key:', error);
+                add_message("Error processing message", "red");
+            });
+    });
+
+    socket.on("system_message", data => {
+        // Handling system messages
+        add_message(data.content, data.color);
+    });
+
+    function send() {
+        let receiver = $("#receiver").val().trim(); // Gets the recipient's username and removes any spaces.
+        if (!receiver) { // If there is no recipient user name in the input field
+            receiver = Cookies.get(username + "_receiver"); // Getting from Cookies
+            if (!receiver) { // If the recipient is also not stored in the cookies
+                console.error('No receiver specified.');
+                alert('Please specify a receiver.');
+                return;
+            }
+        }
+
+        let message = $("#message").val(); // Get the message to send
+        $("#message").val(""); // Empty Message Input Box
+        console.log('Sending message to:', receiver); // Debugging output: display the user name of the receiver
+        console.log('Sending message from:', username);
+
+        // Obtain both the sender's and receiver's public keys at the same time
+        axios.all([
+            axios.get('/public_key/' + username), // Public key of the sender
+            axios.get('/public_key/' + receiver)  // Recipient's public key
+        ]).then(axios.spread((senderKeyRes, receiverKeyRes) => {
+            let publicKeySender = senderKeyRes.data.public_key;
+            let publicKeyReceiver = receiverKeyRes.data.public_key;
+
+            // Encrypting messages with two public keys
+            let encryptedMessageSender = encryptMessage(JSON.stringify(message), publicKeySender);
+            let encryptedMessageReceiver = encryptMessage(JSON.stringify(message), publicKeyReceiver);
+
+            // Generate HMAC
+            let hmac = CryptoJS.HmacSHA256(encryptedMessageSender, secret).toString();
+
+            let roomId = Cookies.get(username + "_room_id");
+            if (!roomId) {
+                console.error('Room ID not found, please join a room first.');
+                alert('Please join a room before sending messages.');
+                return;
+            }
+            console.log('encryptedMessageSender:', encryptedMessageSender);
+            console.log('encryptedMessageReceiver:', encryptedMessageReceiver);
+            console.log('Sending message from room ID:', roomId);
+            // Send two versions of the encrypted message to the server
+            // Send message and HMAC to server
+            socket.emit("send", username, encryptedMessageSender, encryptedMessageReceiver, hmac, parseInt(roomId));
+        })).catch(error => {
+            console.error('Error fetching public keys:', error);
+            alert('Error fetching public keys. Please try again.');
+        });
+
+    }
+
+
+    // Encrypted message function, using the receiver's public key
+    function encryptMessage(message, publicKey) {
+        let encrypt = new JSEncrypt();
+        encrypt.setPublicKey(publicKey);
+        return encrypt.encrypt(message);
+    }
+
+    // Decrypt message function, using the user's private key
+    function decryptMessage(encryptedMessage, privateKey) {
+        let decrypt = new JSEncrypt();
+        decrypt.setPrivateKey(privateKey);
+        let decrypted = decrypt.decrypt(encryptedMessage);
+        if (decrypted === null) {
+            console.error('Decryption failed. Check if the private key matches the public key used for encryption.');
+            console.error('Encrypted message:', encryptedMessage); // Outputs encrypted messages for checking for correct formatting
+            console.error('Private Key used:', privateKey); // Output the private key used and check if it is correct
+            return "[Error: Message cannot be decrypted]";
+        }
+        console.log('Decryption successful:', decrypted); // Output the successfully decrypted message
+        return decrypted;
+    }
+
+
+
+        // function to add a message to the message box
+    // called when an incoming message has reached a client
+    function add_message(message, color) {
+        let box = $("#message_box");
+        let child = $(`<p style="color:${color}; margin: 0px;"></p>`).text(message);
+        box.append(child);
+    }
+
+    // we emit a join room event to the server to join a room
+    function join_room() {
+       
+        let receiver = $("#receiver").val();
+        const data = { sender_name: username, receiver_name: receiver };
+        // pass in the receiver of our message to
+        // the server
+        // as well as the current user's username
+        socket.emit("join", username, receiver, (res) => {
+            // res is a string with the error message if the error occurs
+            // this is a pretty bad way of doing error handling, but watevs
+            if (typeof res != "number") {
+                alert(res);
+                return;
+            }
+
+            // set the room id variable to the room id returned by the server
+            room_id = res;
+            Cookies.set(username + "_room_id", room_id);
+            Cookies.set(username + "_receiver", receiver);
+
+            // now we'll show the input box, so the user can input their message
+            $("#chat_box").hide();
+            $("#input_box").show();
+        });
+     
+    }
+
+    // function when the user clicks on "Leave Room"
+    // emits a "leave" event, telling the server that we want to leave the room
+    function leave() {
+        // Retrieve the room_id and receiver stored in the cookies for this specific user
+        let userRoomId = Cookies.get(username + "_room_id");
+        let userReceiver = Cookies.get(username + "_receiver");
+
+        // Emit the leave event with the user-specific room ID
+        if (userRoomId) {
+            console.log('Leaving room:', userRoomId);
+            socket.emit("leave", username, parseInt(userRoomId));
+        }
+
+        // Remove the user-specific cookies
+        Cookies.remove(username + "_room_id");
+        Cookies.remove(username + "_receiver");
+
+        // Reset UI components
+        $("#input_box").hide();
+        $("#chat_box").show();
+        $("#message_box").empty();
+
+        alert('You have left the chat room.');
+    }
+
+
+    function fetchFriends() {
+        if (username) {
+            console.log(`Fetching friends for ${username}`);
+            axios.get(`/friends/${username}`)
+                .then(response => {
+                    const friends = response.data.friends;
+                    const friendsList = $("#friends");
+                    friendsList.empty();
+                    if (friends.length === 0) {
+                        friendsList.append("<li>No friends to show.</li>");
+                    } else {
+                        friends.forEach(friend => {
+                            const friendItem = `<li>
+                                                    <span onclick="selectFriend('${friend.username}')" style="cursor: pointer;">${friend.username} (${friend.status}, ${friend.role})</span>
+                                                    <button onclick="updateFriendStatus('${friend.username}', 'rejected')">Remove</button>
+                                                </li>`;
+                            friendsList.append(friendItem);
+                        });
+                    }
+                    console.log(`Loaded friends: ${friends}`);
+                })
+                .catch(error => {
+                    console.error('Error fetching friends:', error);
+                    $("#friends").append("<li>Error loading friends.</li>");
+                });
+        } else {
+            console.error('User not logged in.');
+            $("#friends").append("<li>User not logged in.</li>");
+        }
+    }
+
+    function updateFriendStatus(friendUsername, status) {
+        // Check if the current receiver is the user being blocked or removed
+        let currentReceiver = Cookies.get(username + "_receiver");
+        if (currentReceiver === friendUsername) {
+            leave();  // Call leave function to exit the room
+        }
+
+        if (confirm(`Are you sure you want to ${status === 'blocked' ? 'block' : 'remove'} this friend?`)) {
+            axios.post('/update_friend_status', {
+                username: username,
+                friendname: friendUsername,
+                status: status
+            })
+            .then(response => {
+                if (response.data.message) {
+                    alert(`Friend ${status === 'blocked' ? 'blocked' : 'removed'} successfully`);
+                    fetchFriends(); // Reload the friends list
+                    if (status === 'blocked' || status === 'rejected') {
+                        // Check if a blocked or removed friend was in an active chat
+                        if (currentReceiver === friendUsername) {
+                            console.log('Leaving the room because the user was blocked or removed.');
+                            // Optionally reset the receiver if they were in a chat
+                            $("#receiver").val('');
+                            $("#message_box").empty();
+                        }
+                    }
+                } else {
+                    alert(`Failed to ${status === 'blocked' ? 'block' : 'remove'} friend: ` + response.data.error);
+                }
+            })
+            .catch(error => {
+                console.error(`Error ${status === 'blocked' ? 'blocking' : 'removing'} friend:`, error);
+                alert(`Failed to ${status === 'blocked' ? 'block' : 'remove'} friend. Please try again.`);
+            });
+        }
+    }
+
+
+
+    function selectFriend(friendUsername) {
+        $("#receiver").val(friendUsername);
+        join_room();
+        $("#message_box").empty();
+    }
+
+
+    function addFriend() {
+        let friendUsername = $("#new_friend_username").val().trim();
+        if (!friendUsername) {
+            alert("Please enter a username.");
+            return;
+        }
+
+        // Sends a POST request to the backend, passing the current username and the friend's username
+        axios.post('/add_friend', {
+            username: username,
+            friendname: friendUsername
+        })
+        .then(response => {
+            if (response.status === 200) {
+                alert('Friend request sent successfully!');
+                fetchFriendRequests();  // Reload the friend request list
+            } else {
+                alert('Failed to send friend request: ' + response.data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error sending friend request:', error);
+            alert('Failed to send friend request. ' + (error.response && error.response.data.error ? error.response.data.error : ""));
+        });
+
+        // Clear Input Box
+        $("#new_friend_username").val('');
+    }
+
+
+    function fetchFriendRequests() {
+        axios.get('/friend_requests')
+            .then(response => {
+                const requests = response.data;
+                const receivedList = $("#received_requests");
+                const sentList = $("#sent_requests");
+                receivedList.empty();
+                sentList.empty();
+
+                requests.forEach(request => {
+                    // Updating the list of received requests
+                    if (request.receiver_username === username) {
+                        let manageButtons = "";
+                        if (request.status === 'pending') {
+                            manageButtons = `<button onclick="respondToRequest(${request.id}, 'accept')">Accept</button>
+                                             <button onclick="respondToRequest(${request.id}, 'reject')">Reject</button>`;
+                        }
+                        let blockButton = `<button onclick="toggleBlockStatus('${request.sender_username}', ${request.id}, '${request.status === 'blocked' ? 'unblock' : 'block'}')">${request.status === 'blocked' ? 'Unblock' : 'Block'}</button>`;
+                        receivedList.append(`<li>${request.sender_username} (${request.status}) ${manageButtons} ${blockButton}</li>`);
+                    }
+                    // Updating the list of sent requests
+                    if (request.sender_username === username) {
+                        let statusText = request.status.charAt(0).toUpperCase() + request.status.slice(1); // Capitalize the first letter
+                        sentList.append(`<li>${request.receiver_username} (${statusText})</li>`);
+                    }
+                });
+            })
+            .catch(error => {
+                console.error('Error fetching friend requests:', error);
+            });
+    }
+
+    function toggleBlockStatus(friendUsername, requestId, action) {
+        // Check if the current receiver is the user being blocked or unblocked
+        let currentReceiver = Cookies.get(username + "_receiver");
+        if (currentReceiver === friendUsername) {
+            leave();  // Call leave function to exit the room if currently chatting with this user
+        }
+
+        axios.post('/update_friend_status', {
+            username: username,
+            friendname: friendUsername,
+            status: action === 'block' ? 'blocked' : 'unblocked'
+        })
+        .then(response => {
+            if (response.data.message) {
+                alert(`Friend request status updated to ${action}`);
+                fetchFriendRequests(); // Reload the friend requests to reflect changes
+                // If action is block and the current receiver was the blocked user, handle UI and state changes
+                if (action === 'block' && currentReceiver === friendUsername) {
+                    console.log('Exiting chat room due to blocking the user.');
+                    $("#receiver").val('');  // Clear the receiver input field
+                    $("#message_box").empty();  // Clear messages
+                }
+            } else {
+                alert(`Failed to ${action} friend: ` + response.data.error);
+            }
+        })
+        .catch(error => {
+            console.error(`Error updating friend status to ${action}:`, error);
+            alert(`Failed to ${action} friend. Please try again.`);
+        });
+    }
+
+
+
+    function respondToRequest(requestId, accept) {
+        axios.post(`/friend_requests/respond/${requestId}`, { action: accept ? 'accept' : 'reject' })
+            .then(response => {
+                alert('Request ' + (accept ? 'accepted' : 'rejected'));
+                fetchFriendRequests();  // Reload the friend request list
+            })
+            .catch(error => {
+                console.error('Error responding to friend request:', error);
+                alert('Failed to respond to request.');
+            });
+    }
+
+
+
+</script>
+{% endblock %}

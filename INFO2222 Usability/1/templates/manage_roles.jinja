@@ -1,0 +1,54 @@
+{% extends 'base.jinja' %}
+
+{% block content %}
+<div class="container">
+    <h2>Manage User Roles</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Current Role</th>
+                <th>New Role</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.username }}</td>
+                <td>{{ user.role }}</td>
+                <td>
+                    <select id="new_role_{{ user.username }}" class="form-control">
+                        {% for role in available_roles %}
+                        <option value="{{ role }}" {% if role == user.role %}selected{% endif %}>{{ role }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <button onclick="updateUserRole('{{ user.username }}');">Update Role</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function updateUserRole(username) {
+    var newRole = document.getElementById('new_role_' + username).value;
+    fetch(`/update_user_role`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: username, role: newRole})
+    }).then(response => response.json())
+      .then(data => {
+          if (data.message) {
+              alert('Role updated successfully');
+              location.reload();
+          } else {
+              alert('Failed to update role: ' + data.error);
+          }
+      });
+}
+</script>
+{% endblock %}

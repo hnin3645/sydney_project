@@ -1,0 +1,221 @@
+{% extends 'base.jinja' %}
+
+{% block content %}
+<!-- Navigation Bar -->
+<nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <div class="container">
+        <a class="navbar-brand" href="#">ED Forum</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav mr-auto">
+                <!-- Show "Create New Topic" only if role is not guest -->
+                {% if role != 'guest' %}
+                <li class="nav-item">
+                    <a class="nav-link" href="#" onclick="showCreateForm()">Create New Topic</a>
+                </li>
+                {% endif %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{{ url_for('home') }}">Back</a>
+                </li>
+                <!-- Conditional display of Manage Roles based on user role -->
+                {% if role in ['admin', 'staff'] %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{{ url_for('manage_roles') }}">Manage Roles</a>
+                </li>
+                {% endif %}
+            </ul>
+            <span class="navbar-text">
+                Signed in as {{ username }} ({{ role }})
+            </span>
+        </div>
+    </div>
+</nav>
+
+
+<div class="container mt-5">
+    <div class="row">
+        <!-- Topics list (Left side) -->
+        <div class="col-md-6">
+            <h2>Topics</h2>
+            <ul class="list-group">
+                {% for post in posts %}
+                <li class="list-group-item">
+                    <a href="#" onclick="showTopicDetail({{ post.id }}, '{{ post.title }}', '{{ post.content | safe }}', '{{ post.author }}', '{{ role }}')">
+                        {{ post.title }}
+                    </a>
+                    <!-- Show edit button conditionally -->
+                    {% if role in ['admin', 'staff'] or post.author == username %}
+                    <button onclick="editPost({{ post.id }});">Edit</button>
+                    <button onclick="deletePost({{ post.id }});">Delete</button>
+                    {% endif %}
+                </li>
+                {% endfor %}
+
+            </ul>
+        </div>
+
+        <!-- Topic detail (Right side) -->
+        <div class="col-md-6">
+            <div id="rightPanel" class="mt-4">
+                <h3>Topic Detail</h3>
+                <p id="detailText">Select a topic to see details.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function showTopicDetail(postId, title, content, author, role) {
+    fetch(`/get_comments?post_id=${postId}`)
+    .then(response => response.json())
+    .then(data => {
+        console.log(data);
+        let commentsHtml = data.map(comment => `
+            <div class="card mb-2">
+                <div class="card-body">
+                    <p class="card-text">${comment.content}</p>
+                    <footer class="blockquote-footer">${comment.author}</footer>
+                    ${(role === 'admin' || role === 'staff' || comment.author === '{{ username }}') ? `<button onclick="deleteComment(${comment.id});">Delete</button>` : ''}
+                </div>
+            </div>
+        `).join('');
+
+        // Conditionally add the comment submission form if the role is not 'guest'
+        let commentFormHtml = role !== 'guest' ? `
+            <div class="card bg-light mt-3">
+                <div class="card-body">
+                    <form onsubmit="submitComment(${postId}); return false;">
+                        <div class="form-group">
+                            <label for="comment">Your Comment:</label>
+                            <textarea class="form-control" id="comment" name="comment" required></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Submit Comment</button>
+                    </form>
+                </div>
+            </div>
+        ` : '';
+
+        var detailHTML = `
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h3 class="card-title">${title}</h3>
+                    <h6 class="card-subtitle mb-2 text-muted">Posted by ${author}</h6>
+                    <p class="card-text">${content}</p>
+                </div>
+            </div>
+            <h4>Comments</h4>
+            <div>${commentsHtml}</div>
+            ${commentFormHtml}
+        `;
+        document.getElementById('rightPanel').innerHTML = detailHTML;
+    })
+    .catch(error => {
+        console.error('Error fetching comments:', error);
+        document.getElementById('rightPanel').innerHTML = `<p>Error loading comments.</p>`;
+    });
+}
+
+
+
+function showCreateForm() {
+    document.getElementById('rightPanel').innerHTML = `
+        <h3>Create a New Topic</h3>
+        <form action="{{ url_for('create_topic') }}" method="post">
+            <div class="form-group">
+                <label for="title">Title</label>
+                <input type="text" class="form-control" id="title" name="title" required>
+            </div>
+            <div class="form-group">
+                <label for="content">Content</label>
+                <textarea class="form-control" id="content" name="content" rows="5" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit</button>
+        </form>
+    `;
+}
+function submitComment(postId) {
+    var comment = document.getElementById('comment').value;
+    fetch('/submit_comment', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `post_id=${postId}&comment=${encodeURIComponent(comment)}`
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            alert('Comment added successfully');
+            showTopicDetail(postId);  // Refresh the topic details to show the new comment
+        } else {
+            alert('Failed to add comment: ' + data.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error submitting comment:', error);
+    });
+}
+
+function deletePost(postId) {
+    fetch(`/delete_post/${postId}`, { method: 'POST' })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            alert('Post deleted successfully');
+            // Optionally refresh the list of posts or remove the post from the DOM
+        } else {
+            alert('Failed to delete post: ' + data.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting post:', error);
+    });
+}
+
+function deleteComment(commentId) {
+    fetch(`/delete_comment/${commentId}`, { method: 'POST' })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            alert('Comment deleted successfully');
+            // Optionally remove comments from the DOM or refresh the comment list
+        } else {
+            alert('Failed to delete comment: ' + data.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting comment:', error);
+    });
+}
+
+function editPost(postId) {
+    const title = prompt("Enter new title:");
+    const content = prompt("Enter new content:");
+
+    if(title && content) {
+        fetch(`/edit_post/${postId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({title: title, content: content})
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.message) {
+                alert('Post updated successfully');
+                location.reload();  // Reload the page to see the updated post
+            } else {
+                alert('Failed to update post: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error updating post:', error);
+        });
+    }
+}
+
+</script>
+{% endblock %}
